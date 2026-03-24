@@ -3,6 +3,14 @@ from pydantic import BaseModel
 from typing import List, Optional
 import numpy as np
 from .solver import solve_kinetics
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app = FastAPI(title="Sprinter Biomechanics API")
 

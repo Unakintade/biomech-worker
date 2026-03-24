@@ -1,7 +1,7 @@
 # Use an official Python runtime with GL support
 FROM python:3.10-slim-bullseye
 
-# Install system dependencies for MuJoCo and OpenGL
+# Install Native C libraries for MuJoCo
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libosmesa6 \
@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
     libglfw3 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Set Environment Variables for MuJoCo headless rendering
+# Headless Rendering Config
 ENV MUJOCO_GL=osmesa
 ENV PYOPENGL_PLATFORM=osmesa
 
@@ -20,5 +20,5 @@ RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 
 COPY ./app /code/app
 
-# Start FastAPI using uvicorn
+# Start the API
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "10000"]

@@ -1,1 +1,7 @@
-fastapi uvicorn mujoco numpy scipy mediapipe filterpy
+fastapi
+uvicorn
+mujoco
+numpy
+scipy
+mediapipe
+filterpy

@@ -1,45 +1,51 @@
+import os
+import sys
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List
 import numpy as np
-from .solver import solve_kinetics
-from fastapi.middleware.cors import CORSMiddleware
 
+# Ensure the 'app' folder is in the path so we can find solver.py
+sys.path.append(os.path.dirname(__file__))
+
+# 1. DEFINE APP FIRST (Fixes NameError)
 app = FastAPI(title="Sprinter Biomechanics API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-class Landmark(BaseModel):
-    x: float
-    y: float
-    z: float
-    visibility: float
+# 2. MATCH FRONTEND DATA STRUCTURE (Fixes 422 Error)
+class FrameData(BaseModel):
+    frameIdx: int
+    timestamp: float
+    # worldPositions is [33 landmarks][x, y, z, visibility]
+    worldPositions: List[List[float]] 
 
 class AnalysisRequest(BaseModel):
-    landmarks_sequence: List[List[Landmark]]  # Nested list: [frame][landmark_id]
+    # Renamed to 'landmarks' to match your frontend JSON
+    landmarks: List[FrameData]
     weight_kg: float
     height_cm: float
     fps: int
 
-@app.get("/health")
-def health():
+# Import solver after defining models
+from solver import solve_kinetics
+
+@app.get("/")
+def health_check():
     return {"status": "online", "engine": "MuJoCo 3.x"}
 
 @app.post("/analyze")
 async def analyze_sprint(request: AnalysisRequest):
     try:
-        # Convert Pydantic models to Numpy arrays for processing
-        data_array = np.array([
-            [[lm.x, lm.y, lm.z] for lm in frame] 
-            for frame in request.landmarks_sequence
-        ])
+        # 3. CONVERT DATA FOR MATH
+        # We need a 3D array: [frames, landmarks, 3-coords]
+        processed_data = []
+        for frame in request.landmarks:
+            # We take only x, y, z (the first 3 numbers) from worldPositions
+            coords = [p[:3] for p in frame.worldPositions]
+            processed_data.append(coords)
+            
+        data_array = np.array(processed_data)
         
-        # Call the MuJoCo Solver (Inverse Dynamics)
+        # 4. RUN PHYSICS
         results = solve_kinetics(
             data_array, 
             request.weight_kg, 
@@ -49,4 +55,6 @@ async def analyze_sprint(request: AnalysisRequest):
         
         return results
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log the error for Render logs
+        print(f"CRITICAL ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")

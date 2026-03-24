@@ -26,8 +26,8 @@ class AnalysisRequest(BaseModel):
     height_cm: float
     fps: int
 
-@app.get("/")
-def health_check():
+@app.get("/health")
+def health():
     return {"status": "online", "engine": "MuJoCo 3.x"}
 
 @app.post("/analyze")

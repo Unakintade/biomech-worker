@@ -28,8 +28,8 @@ class AnalysisRequest(BaseModel):
 # Import solver after defining models
 from solver import solve_kinetics
 
-@app.get("/")
-def health_check():
+@app.get("/health")
+def health():
     return {"status": "online", "engine": "MuJoCo 3.x"}
 
 @app.post("/analyze")

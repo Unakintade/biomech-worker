@@ -5,14 +5,14 @@ import numpy as np
 from .solver import solve_kinetics
 from fastapi.middleware.cors import CORSMiddleware
 
+app = FastAPI(title="Sprinter Biomechanics API")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-app = FastAPI(title="Sprinter Biomechanics API")
 
 class Landmark(BaseModel):
     x: float

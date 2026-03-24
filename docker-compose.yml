@@ -1,0 +1,13 @@
+version: "3.9"
+
+services:
+  mujoco-backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - MUJOCO_GL=osmesa
+    restart: unless-stopped
+    # Optional: mount a volume for custom MJCF models
+    # volumes:
+    #   - ./models:/app/models

@@ -2,14 +2,22 @@ import os
 import sys
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import numpy as np
+from fastapi.middleware.cors import CORSMiddleware
 
 # Ensure the 'app' folder is in the path so we can find solver.py
 sys.path.append(os.path.dirname(__file__))
 
 # 1. DEFINE APP FIRST (Fixes NameError)
 app = FastAPI(title="Sprinter Biomechanics API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 2. MATCH FRONTEND DATA STRUCTURE (Fixes 422 Error)
 class FrameData(BaseModel):

@@ -2,6 +2,11 @@
     <compiler angle="degree" coordinate="local" inertiafromgeom="true"/>
     <option integrator="RK4" timestep="0.01" gravity="0 0 -9.81"/>
     
+    <default>
+        <!-- Adding damping and armature to help with high-velocity stability -->
+        <joint damping="0.5" armature="0.01"/>
+    </default>
+
     <worldbody>
         <light diffuse=".5 .5 .5" pos="0 0 3" dir="0 0 -1"/>
         <geom name="floor" type="plane" size="10 10 .1" rgba=".8 .8 .8 1"/>
@@ -12,7 +17,8 @@
             
             <!-- Right Leg -->
             <body name="r_thigh" pos="0 -0.1 0">
-                <joint name="r_hip" type="ball" range="-20 100"/>
+                <!-- Fixed: ball joint range must start with 0 -->
+                <joint name="r_hip" type="ball" range="0 100"/>
                 <geom name="r_thigh_geom" type="capsule" size="0.05" fromto="0 0 0 0 0 -0.4"/>
                 <body name="r_shank" pos="0 0 -0.4">
                     <joint name="r_knee" type="hinge" axis="0 1 0" range="0 150"/>
@@ -22,7 +28,8 @@
 
             <!-- Left Leg -->
             <body name="l_thigh" pos="0 0.1 0">
-                <joint name="l_hip" type="ball" range="-20 100"/>
+                <!-- Fixed: ball joint range must start with 0 -->
+                <joint name="l_hip" type="ball" range="0 100"/>
                 <geom name="l_thigh_geom" type="capsule" size="0.05" fromto="0 0 0 0 0 -0.4"/>
                 <body name="l_shank" pos="0 0 -0.4">
                     <joint name="l_knee" type="hinge" axis="0 1 0" range="0 150"/>

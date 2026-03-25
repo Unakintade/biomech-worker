@@ -17,7 +17,8 @@ def get_angle(p1, p2, p3):
 
 def solve_kinetics(landmarks_sequence, weight_kg, height_cm, fps):
     """
-    Calculates bilateral kinematics (both legs) and vertical forces.
+    Calculates bilateral kinematics and estimates Ground Reaction Forces
+    using Center of Mass (CoM) acceleration.
     """
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
@@ -25,12 +26,9 @@ def solve_kinetics(landmarks_sequence, weight_kg, height_cm, fps):
     model = mujoco.MjModel.from_xml_path(MODEL_PATH)
     data = mujoco.MjData(model)
 
-    # Result containers
     results_history = {
         "right_knee": [],
         "left_knee": [],
-        "right_hip": [],
-        "left_hip": [],
         "forces": []
     }
     
@@ -39,75 +37,79 @@ def solve_kinetics(landmarks_sequence, weight_kg, height_cm, fps):
     qpos_history = []
 
     # 1. Map Landmarks to Joint Positions
+    # We use a standard scale factor based on the subject's height
+    scale_factor = (height_cm / 100.0)
+
     for frame_idx in range(len(landmarks_sequence)):
         fd = landmarks_sequence[frame_idx]
         current_qpos = np.zeros(model.nq)
         
         # --- ROOT POSITION (Global movement) ---
+        # We track the hips to move the entire model in 3D space
         hip_center = (fd[23] + fd[24]) / 2.0
-        scale_factor = (height_cm / 100.0)
+        
+        # X: Left/Right, Y: Forward/Back, Z: Vertical (Up)
+        # MediaPipe Y is inverted (0 is top), so we flip it for MuJoCo
         current_qpos[0:3] = [
             (hip_center[0] - 0.5) * scale_factor, 
-            -(hip_center[1] - 0.5) * scale_factor, 
-            (1.2 - hip_center[1]) * scale_factor
+            -(hip_center[2]), # Use MediaPipe Z for depth if available
+            (1.1 - hip_center[1]) * scale_factor 
         ]
-        current_qpos[3:7] = [1, 0, 0, 0]
+        current_qpos[3:7] = [1, 0, 0, 0] # Identity quaternion
 
-        # --- CALCULATE ANGLES ---
-        # Right Leg: Hip(24), Knee(26), Ankle(28)
+        # --- CALCULATE JOINT ANGLES ---
         r_knee_angle = get_angle(fd[24], fd[26], fd[28])
-        # Left Leg: Hip(23), Knee(25), Ankle(27)
         l_knee_angle = get_angle(fd[23], fd[25], fd[27])
         
-        # Hip angles (relative to torso - simplified)
-        r_hip_angle = get_angle(fd[12], fd[24], fd[26])
-        l_hip_angle = get_angle(fd[11], fd[23], fd[25])
-
-        # --- UPDATE MUJOCO QPOS ---
-        # Mapping based on sprinter.xml structure:
-        # r_hip (ball): 7,8,9 | r_knee: 10
-        # l_hip (ball): 11,12,13 | l_knee: 14
+        # Map to MuJoCo qpos indices
+        # Note: Indexing depends on your specific XML structure
         if model.nq > 14:
             current_qpos[10] = np.radians(r_knee_angle)
             current_qpos[14] = np.radians(l_knee_angle)
-            # Hip ball joints are complex, we'll map a single axis for this demo
-            current_qpos[7] = np.radians(r_hip_angle - 180) 
-            current_qpos[11] = np.radians(l_hip_angle - 180)
 
         qpos_history.append(current_qpos)
 
-    # 2. SMOOTHING
+    # 2. TEMPORAL SMOOTHING
+    # Reduced window size to preserve acceleration peaks (Impacts)
     qpos_history = np.array(qpos_history)
-    window = min(11, len(qpos_history) // 2 * 2 - 1)
+    window = min(7, len(qpos_history) // 2 * 2 - 1) 
     if window > 3:
         for i in range(model.nq):
-            qpos_history[:, i] = savgol_filter(qpos_history[:, i], window, 3)
+            qpos_history[:, i] = savgol_filter(qpos_history[:, i], window, 2)
 
-    # 3. KINETICS PASS
+    # 3. KINETICS PASS (F = m(a+g))
     mass = mujoco.mj_getTotalmass(model)
     weight_scale = weight_kg / mass
+    com_vel_history = []
 
+    # First, calculate CoM velocities across all frames
     for t in range(len(qpos_history)):
+        data.qpos[:] = qpos_history[t]
+        mujoco.mj_forward(model, data)
+        # Store 3D Center of Mass position
+        com_vel_history.append(np.array(data.subtree_com[0]))
+
+    # Calculate Force using Second Derivative of Center of Mass
+    for t in range(len(com_vel_history)):
         if t < 2:
             results_history["right_knee"].append(float(np.degrees(qpos_history[t][10])))
             results_history["left_knee"].append(float(np.degrees(qpos_history[t][14])))
             results_history["forces"].append(weight_kg * 9.81)
             continue
 
-        data.qpos[:] = qpos_history[t]
-        data.qvel[:] = (qpos_history[t][:model.nv] - qpos_history[t-1][:model.nv]) / dt
-        prev_qvel = (qpos_history[t-1][:model.nv] - qpos_history[t-2][:model.nv]) / dt
-        data.qacc[:] = (data.qvel - prev_qvel) / dt
+        # Calculate Vertical CoM Acceleration (a_z) via Finite Difference
+        v_current = (com_vel_history[t][2] - com_vel_history[t-1][2]) / dt
+        v_prev = (com_vel_history[t-1][2] - com_vel_history[t-2][2]) / dt
+        accel_z = (v_current - v_prev) / dt
 
-        mujoco.mj_forward(model, data)
-        mujoco.mj_inverse(model, data)
+        # Ground Reaction Force (GRF) = mass * (acceleration + gravity)
+        # We cap the force at 0 (you can't have negative GRF)
+        grf_z = mass * (accel_z + 9.81)
+        final_force = max(0, grf_z * weight_scale)
         
-        # Vertical force = ma_z + gravity
-        total_force = (abs(data.qfrc_inverse[2]) + (mass * 9.81)) * weight_scale
-        
-        results_history["right_knee"].append(float(np.degrees(data.qpos[10])))
-        results_history["left_knee"].append(float(np.degrees(data.qpos[14])))
-        results_history["forces"].append(float(total_force))
+        results_history["right_knee"].append(float(np.degrees(qpos_history[t][10])))
+        results_history["left_knee"].append(float(np.degrees(qpos_history[t][14])))
+        results_history["forces"].append(float(final_force))
 
     return {
         "joint_angles": {
@@ -118,6 +120,7 @@ def solve_kinetics(landmarks_sequence, weight_kg, height_cm, fps):
         "summary": {
             "max_force_newtons": round(max(results_history["forces"]), 2),
             "avg_right_knee": round(np.mean(results_history["right_knee"]), 2),
-            "avg_left_knee": round(np.mean(results_history["left_knee"]), 2)
+            "avg_left_knee": round(np.mean(results_history["left_knee"]), 2),
+            "frames_processed": len(landmarks_sequence)
         }
     }

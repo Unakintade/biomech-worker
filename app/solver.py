@@ -1,6 +1,7 @@
 """
-Landmark-based kinetics (butterworth + Savitzky–Golay on resampled time).
-Uses real per-frame timestamps when irregular; MediaPipe world frame (Y up).
+Hybrid pipeline: MuJoCo geometric IK + inverse dynamics when `mujoco` is installed,
+otherwise pure landmark kinetics (Butterworth + Savitzky–Golay).
+MediaPipe world: Y up; timestamps preserved via resampling.
 """
 
 from __future__ import annotations
@@ -21,8 +22,8 @@ def butter_lowpass_filter(data, cutoff, fs, order=4):
     return filtfilt(b, a, data, axis=0)
 
 
-def resample_landmarks_uniform(data: np.ndarray, t_src: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
-    """Interpolate [frames, 33, 3] onto uniform time from t_src[0]..t_src[-1]. Returns data_u, t_uniform, dt."""
+def resample_landmarks_uniform(data: np.ndarray, t_src: np.ndarray):
+    """Interpolate [frames, 33, 3] onto uniform time from t_src[0]..t_src[-1]."""
     num_frames = data.shape[0]
     t0, t1 = float(t_src[0]), float(t_src[-1])
     duration = t1 - t0
@@ -40,18 +41,11 @@ def resample_landmarks_uniform(data: np.ndarray, t_src: np.ndarray) -> tuple[np.
 
 
 def get_segment_metrics(p_proximal, p_distal, dt, window_size):
-    """
-    Segment direction u = normalize(distal - proximal).
-    - Linear acceleration of distal point (SG 2nd deriv).
-    - Angular velocity ω ≈ u × (du/dt) (rad/s) for |u| ≈ 1.
-    - Orientation pitch/yaw helpers from u (Y-up world frame).
-    """
     vector = p_distal - p_proximal
     norm = np.linalg.norm(vector, axis=1)[:, None]
     norm = np.where(norm < 1e-9, 1e-9, norm)
     unit_vector = vector / norm
 
-    # Angle from +Y (vertical) and yaw in X–Z
     pitch = np.degrees(
         np.arctan2(
             np.sqrt(unit_vector[:, 0] ** 2 + unit_vector[:, 2] ** 2),
@@ -60,7 +54,6 @@ def get_segment_metrics(p_proximal, p_distal, dt, window_size):
     )
     yaw = np.degrees(np.arctan2(unit_vector[:, 0], unit_vector[:, 2]))
     orientations = np.stack([pitch, yaw], axis=1)
-
     accel = savgol_filter(p_distal, window_size, polyorder=3, deriv=2, delta=dt, axis=0)
 
     n = unit_vector.shape[0]
@@ -79,28 +72,19 @@ def get_segment_metrics(p_proximal, p_distal, dt, window_size):
     }
 
 
-def get_point_linear_kinematics(position: np.ndarray, dt: float, window_size: int) -> tuple[np.ndarray, np.ndarray]:
-    """Linear velocity and acceleration of a 3D point track (n, 3)."""
+def get_point_linear_kinematics(position: np.ndarray, dt: float, window_size: int):
     vel = savgol_filter(position, window_size, polyorder=3, deriv=1, delta=dt, axis=0)
     accel = savgol_filter(position, window_size, polyorder=3, deriv=2, delta=dt, axis=0)
     return vel, accel
 
 
-def solve_kinetics(landmarks_sequence, weight_kg, height_cm, fps, timestamps=None):
-    """
-    High-fidelity kinematics on MediaPipe world landmarks.
-    - Resamples to uniform time using actual timestamps when provided.
-    - Pelvis linear kinetics use hip midpoint (23 + 24) / 2; vertical axis is Y (up).
-    - Pelvis orientation uses hip line right→left (24 → 23).
-    height_cm reserved for future scaling (unused).
-    """
-    _ = height_cm  # API compatibility
+def _preprocess(
+    landmarks_sequence,
+    fps: int,
+    timestamps: np.ndarray | None,
+):
     data = np.asarray(landmarks_sequence, dtype=float)
     num_frames = data.shape[0]
-
-    if num_frames < 5:
-        raise ValueError("Not enough frames for analysis. Minimum 5 frames required.")
-
     if timestamps is None or len(timestamps) != num_frames:
         t_src = np.arange(num_frames, dtype=float) / float(max(fps, 1))
     else:
@@ -110,19 +94,21 @@ def solve_kinetics(landmarks_sequence, weight_kg, height_cm, fps, timestamps=Non
     duration = float(t_uniform[-1] - t_uniform[0]) if num_frames > 1 else 0.0
     fs_eff = (num_frames - 1) / duration if duration > 1e-9 else float(max(fps, 1))
 
-    processed_data = np.zeros_like(data_u)
+    processed = np.zeros_like(data_u)
     for i in range(33):
-        processed_data[:, i, :] = butter_lowpass_filter(data_u[:, i, :], cutoff=6, fs=fs_eff)
+        processed[:, i, :] = butter_lowpass_filter(data_u[:, i, :], cutoff=6, fs=fs_eff)
 
     window = min(15, num_frames // 2 * 2 - 1)
     if window < 5:
         window = 5
 
+    return processed, t_src, dt, fs_eff, window
+
+
+def _landmark_segment_payload(processed_data: np.ndarray, dt: float, window: int):
     hip_mid = (processed_data[:, 23, :] + processed_data[:, 24, :]) / 2
     hip_vel, hip_accel = get_point_linear_kinematics(hip_mid, dt, window)
 
-    # Pelvis: right hip (24) to left hip (23) for segment angular metrics;
-    # expose hip-mid linear acceleration under pelvis for consistency with CoM proxy.
     pelvis_seg = get_segment_metrics(
         processed_data[:, 24, :], processed_data[:, 23, :], dt, window
     )
@@ -135,60 +121,126 @@ def solve_kinetics(landmarks_sequence, weight_kg, height_cm, fps, timestamps=Non
     thigh_metrics = get_segment_metrics(r_thigh_prox, r_thigh_dist, dt, window)
     shank_metrics = get_segment_metrics(r_shank_prox, r_shank_dist, dt, window)
     foot_metrics = get_segment_metrics(r_foot_prox, r_foot_dist, dt, window)
+    return (
+        hip_mid,
+        hip_vel,
+        hip_accel,
+        pelvis_seg,
+        thigh_metrics,
+        shank_metrics,
+        foot_metrics,
+    )
 
-    # Vertical support estimate: F_y ≈ m (a_y + g), Y up
-    pelvis_accel_y = hip_accel[:, 1]
-    forces = weight_kg * (pelvis_accel_y + 9.81)
-    forces_display = np.maximum(forces, 0.0)
 
-    frames = []
-    for i in range(num_frames):
-        ts = float(t_src[i]) if i < len(t_src) else float(i) / float(max(fps, 1))
-        fy = float(forces_display[i])
-        half = fy / 2.0
-        frames.append(
-            {
-                "timestamp": ts,
-                "frame_idx": i,
-                "vertical_force": float(forces[i]),
-                "com_position": hip_mid[i].tolist(),
-                "com_velocity": hip_vel[i].tolist(),
-                "grf_left": [0.0, half, 0.0],
-                "grf_right": [0.0, half, 0.0],
-                "pelvis": {
-                    "acceleration": pelvis_seg["acceleration"][i],
-                    "angular_velocity": pelvis_seg["angular_velocity"][i],
-                    "orientation": pelvis_seg["orientation"][i],
-                },
-                "thigh": {
-                    "acceleration": thigh_metrics["acceleration"][i],
-                    "angular_velocity": thigh_metrics["angular_velocity"][i],
-                    "orientation": thigh_metrics["orientation"][i],
-                },
-                "shank": {
-                    "acceleration": shank_metrics["acceleration"][i],
-                    "angular_velocity": shank_metrics["angular_velocity"][i],
-                    "orientation": shank_metrics["orientation"][i],
-                },
-                "foot": {
-                    "acceleration": foot_metrics["acceleration"][i],
-                    "angular_velocity": foot_metrics["angular_velocity"][i],
-                    "orientation": foot_metrics["orientation"][i],
-                },
-            }
-        )
+def _response_metadata(fs_eff: float, fps: int, window: int, engine: str):
+    return {
+        "fps": fps,
+        "effective_fs_hz": round(float(fs_eff), 3),
+        "filter_butterworth": "6Hz Low-pass",
+        "filter_savgol": f"Window {window}, Poly 3",
+        "engine": engine,
+    }
+
+
+def solve_kinetics(landmarks_sequence, weight_kg, height_cm, fps, timestamps=None):
+    height_cm = height_cm or 0.0
+    data = np.asarray(landmarks_sequence, dtype=float)
+    num_frames = data.shape[0]
+    if num_frames < 5:
+        raise ValueError("Not enough frames for analysis. Minimum 5 frames required.")
+
+    t_in = None if timestamps is None else np.asarray(timestamps, dtype=float)
+    processed, t_src, dt, fs_eff, window = _preprocess(landmarks_sequence, fps, t_in)
+
+    (
+        hip_mid,
+        hip_vel,
+        hip_accel,
+        pelvis_seg,
+        thigh_metrics,
+        shank_metrics,
+        foot_metrics,
+    ) = _landmark_segment_payload(processed, dt, window)
 
     shank_av = np.array(shank_metrics["angular_velocity"])
     shank_av_mag = np.linalg.norm(shank_av, axis=1)
 
+    mj_frames = None
+    try:
+        from mujoco_pipeline import run_mujoco_inverse_dynamics
+
+        mj_frames = run_mujoco_inverse_dynamics(
+            processed, dt, float(weight_kg), float(height_cm), int(fps), t_src
+        )
+    except Exception:
+        mj_frames = None
+
+    frames = []
+    for i in range(num_frames):
+        ts = float(t_src[i]) if i < len(t_src) else float(i) / float(max(fps, 1))
+
+        seg_block = {
+            "pelvis": {
+                "acceleration": pelvis_seg["acceleration"][i],
+                "angular_velocity": pelvis_seg["angular_velocity"][i],
+                "orientation": pelvis_seg["orientation"][i],
+            },
+            "thigh": {
+                "acceleration": thigh_metrics["acceleration"][i],
+                "angular_velocity": thigh_metrics["angular_velocity"][i],
+                "orientation": thigh_metrics["orientation"][i],
+            },
+            "shank": {
+                "acceleration": shank_metrics["acceleration"][i],
+                "angular_velocity": shank_metrics["angular_velocity"][i],
+                "orientation": shank_metrics["orientation"][i],
+            },
+            "foot": {
+                "acceleration": foot_metrics["acceleration"][i],
+                "angular_velocity": foot_metrics["angular_velocity"][i],
+                "orientation": foot_metrics["orientation"][i],
+            },
+        }
+
+        if mj_frames and i < len(mj_frames):
+            f = dict(mj_frames[i])
+            f.update(seg_block)
+            frames.append(f)
+        else:
+            pelvis_accel_y = float(hip_accel[i][1]) if i < len(hip_accel) else 0.0
+            fy_raw = float(weight_kg) * (pelvis_accel_y + 9.81)
+            fy_dsp = max(0.0, fy_raw)
+            half = fy_dsp / 2.0
+            frames.append(
+                {
+                    "timestamp": ts,
+                    "frame_idx": i,
+                    "vertical_force": fy_raw,
+                    "com_position": hip_mid[i].tolist(),
+                    "com_velocity": hip_vel[i].tolist(),
+                    "grf_left": [0.0, half, 0.0],
+                    "grf_right": [0.0, half, 0.0],
+                    "residual_error": 0.0,
+                    "warnings": [],
+                    **seg_block,
+                }
+            )
+
+    engine = "mujoco-inverse-dynamics" if mj_frames else "landmark-kinetics-v2"
+    if mj_frames:
+        max_force = float(max(abs(f["vertical_force"]) for f in mj_frames))
+    else:
+        max_force = float(
+            np.max(
+                np.maximum(
+                    float(weight_kg) * (hip_accel[:, 1] + 9.81),
+                    0.0,
+                )
+            )
+        )
+
     return {
-        "metadata": {
-            "fps": fps,
-            "effective_fs_hz": round(float(fs_eff), 3),
-            "filter_butterworth": "6Hz Low-pass",
-            "filter_savgol": f"Window {window}, Poly 3",
-            "engine": "landmark-kinetics-v2",
-        },
+        "metadata": _response_metadata(fs_eff, fps, window, engine),
         "frames": frames,
         "summary": {
             "total_frames": num_frames,
@@ -197,7 +249,7 @@ def solve_kinetics(landmarks_sequence, weight_kg, height_cm, fps, timestamps=Non
             "max_residual_m": 0.0,
             "total_warnings": 0,
             "fps": fps,
-            "max_force_newtons": round(float(np.max(forces_display)), 2),
+            "max_force_newtons": round(max_force, 2),
             "max_shank_omega_rad_s": round(float(np.max(shank_av_mag)), 3),
         },
     }

@@ -1,5 +1,5 @@
 # Use an official Python runtime with GL support
-FROM python:3.10-slim-bullseye
+FROM python:3.11-slim-bookworm
 
 # Install Native C libraries for MuJoCo
 RUN apt-get update && apt-get install -y \
@@ -19,6 +19,8 @@ COPY ./requirements.txt /code/requirements.txt
 RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 
 COPY ./app /code/app
+
+ENV PYTHONPATH=/code
 
 # Start the API
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "10000"]

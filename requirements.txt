@@ -1,8 +1,8 @@
-fastapi
-uvicorn
-mujoco
-numpy
-scipy
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+mujoco>=3.1.0
+numpy>=1.24.0
+scipy>=1.11.0
 mediapipe
 filterpy
-pydantic
+pydantic>=2.0.0

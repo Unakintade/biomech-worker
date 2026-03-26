@@ -1,7 +1,7 @@
 import os
 import sys
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import List, Optional
 import numpy as np
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,49 +20,63 @@ app.add_middleware(
 )
 
 # 2. MATCH FRONTEND DATA STRUCTURE (Fixes 422 Error)
+
+
 class FrameData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     frameIdx: int
     timestamp: float
-    # worldPositions is [33 landmarks][x, y, z, visibility]
-    worldPositions: List[List[float]] 
+    worldPositions: List[List[float]]
+
 
 class AnalysisRequest(BaseModel):
-    # Renamed to 'landmarks' to match your frontend JSON
+    model_config = ConfigDict(extra="ignore")
+
     landmarks: List[FrameData]
     weight_kg: float
-    height_cm: float
+    height_cm: Optional[float] = None
     fps: int
 
-# Import solver after defining models
+
 from solver import solve_kinetics
+
 
 @app.get("/health")
 def health():
-    return {"status": "online", "engine": "MuJoCo 3.x"}
+    try:
+        import mujoco
+
+        ver = getattr(mujoco, "__version__", "?")
+        return {"status": "online", "engine": f"mujoco-{ver} + ik-inverse-dynamics"}
+    except ImportError:
+        return {
+            "status": "online",
+            "engine": "landmark-kinetics-fallback (install mujoco for physics ID)",
+        }
+
 
 @app.post("/analyze")
 async def analyze_sprint(request: AnalysisRequest):
     try:
-        # 3. CONVERT DATA FOR MATH
-        # We need a 3D array: [frames, landmarks, 3-coords]
         processed_data = []
+        timestamps = []
         for frame in request.landmarks:
-            # We take only x, y, z (the first 3 numbers) from worldPositions
             coords = [p[:3] for p in frame.worldPositions]
             processed_data.append(coords)
-            
+            timestamps.append(float(frame.timestamp))
+
         data_array = np.array(processed_data)
-        
-        # 4. RUN PHYSICS
+        height_cm = request.height_cm if request.height_cm is not None else 0.0
+
         results = solve_kinetics(
-            data_array, 
-            request.weight_kg, 
-            request.height_cm, 
-            request.fps
+            data_array,
+            request.weight_kg,
+            height_cm,
+            request.fps,
+            timestamps,
         )
-        
         return results
     except Exception as e:
-        # Log the error for Render logs
         print(f"CRITICAL ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")

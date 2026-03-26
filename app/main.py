@@ -21,6 +21,7 @@ app.add_middleware(
 
 # 2. MATCH FRONTEND DATA STRUCTURE (Fixes 422 Error)
 
+
 class FrameData(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -43,7 +44,16 @@ from solver import solve_kinetics
 
 @app.get("/health")
 def health():
-    return {"status": "online", "engine": "landmark-kinetics-v2 (MediaPipe world + SG)"}
+    try:
+        import mujoco
+
+        ver = getattr(mujoco, "__version__", "?")
+        return {"status": "online", "engine": f"mujoco-{ver} + ik-inverse-dynamics"}
+    except ImportError:
+        return {
+            "status": "online",
+            "engine": "landmark-kinetics-fallback (install mujoco for physics ID)",
+        }
 
 
 @app.post("/analyze")

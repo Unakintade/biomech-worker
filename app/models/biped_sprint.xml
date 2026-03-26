@@ -1,0 +1,48 @@
+<mujoco model="sprint_biped">
+  <compiler angle="radian" coordinate="local" inertiafromgeom="true"/>
+  <option integrator="RK4" gravity="0 -9.81 0" timestep="0.001" cone="elliptic"/>
+  <default>
+    <geom condim="3" friction="1.0 0.03 0.003" rgba="0.8 0.6 0.4 1"/>
+    <joint damping="0.2" armature="0.01"/>
+  </default>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.4 0.5 0.6" rgb2="0 0 0" width="128" height="128"/>
+    <texture name="grid" type="2d" builtin="checker" width="256" height="256" rgb1="0.15 0.2 0.25" rgb2="0.2 0.25 0.3"/>
+    <material name="grid" texture="grid" texrepeat="6 6" reflectance="0.05"/>
+  </asset>
+  <worldbody>
+    <light directional="true" diffuse="0.6 0.6 0.6" pos="0 3 3" dir="0 -1 -1"/>
+    <geom name="floor" type="plane" size="12 12 0.05" material="grid" pos="0 0 0"/>
+
+    <body name="pelvis" pos="0 0.95 0">
+      <freejoint name="root"/>
+      <geom name="pelvis_geom" type="sphere" size="0.11" mass="35" rgba="0.85 0.25 0.2 1"/>
+
+      <body name="r_thigh" pos="0 -0.04 0.11">
+        <joint name="r_hip_flex" type="hinge" axis="1 0 0" range="-2.6 2.6"/>
+        <geom type="capsule" fromto="0 0 0 0 -0.38 0" size="0.055" mass="7.5"/>
+        <body name="r_shank" pos="0 -0.38 0">
+          <joint name="r_knee" type="hinge" axis="1 0 0" range="-2.7 0.05"/>
+          <geom type="capsule" fromto="0 0 0 0 -0.38 0" size="0.048" mass="3.5"/>
+          <body name="r_foot" pos="0 -0.38 0">
+            <joint name="r_ankle" type="hinge" axis="1 0 0" range="-1.2 1.0"/>
+            <geom name="r_foot_geom" type="sphere" size="0.055" mass="1.2" friction="1.1 0.04 0.004" rgba="0.2 0.65 0.3 1"/>
+          </body>
+        </body>
+      </body>
+
+      <body name="l_thigh" pos="0 -0.04 -0.11">
+        <joint name="l_hip_flex" type="hinge" axis="1 0 0" range="-2.6 2.6"/>
+        <geom type="capsule" fromto="0 0 0 0 -0.38 0" size="0.055" mass="7.5"/>
+        <body name="l_shank" pos="0 -0.38 0">
+          <joint name="l_knee" type="hinge" axis="1 0 0" range="-2.7 0.05"/>
+          <geom type="capsule" fromto="0 0 0 0 -0.38 0" size="0.048" mass="3.5"/>
+          <body name="l_foot" pos="0 -0.38 0">
+            <joint name="l_ankle" type="hinge" axis="1 0 0" range="-1.2 1.0"/>
+            <geom name="l_foot_geom" type="sphere" size="0.055" mass="1.2" friction="1.1 0.04 0.004" rgba="0.2 0.65 0.3 1"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

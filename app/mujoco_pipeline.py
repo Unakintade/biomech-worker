@@ -16,6 +16,13 @@ try:
 except ImportError:
     mujoco = None
 
+from two_mass_sprint import (
+    precompute_two_mass_inputs,
+    split_vgrf_to_feet,
+    stance_label,
+    two_mass_vgrf_newtons,
+)
+
 _XML = pathlib.Path(__file__).resolve().parent / "models" / "biped_sprint.xml"
 
 # MediaPipe pose landmarks (world)
@@ -88,16 +95,6 @@ def _elevate_to_clear_floor(model, data, qpos: np.ndarray) -> np.ndarray:
     return q
 
 
-def _world_contact_force(model, data, cid: int) -> np.ndarray:
-    f_local = np.zeros(6, dtype=np.float64)
-    mujoco.mj_contactForce(model, data, cid, f_local)
-    try:
-        R = np.array(data.contact.frame[cid], dtype=np.float64).reshape(3, 3, order="F")
-        return R @ f_local[:3]
-    except (ValueError, TypeError, IndexError):
-        return np.array(f_local[:3], dtype=np.float64)
-
-
 def _qpos_from_frame(model, wp: np.ndarray) -> np.ndarray:
     hl = wp[L_HIP]
     hr = wp[R_HIP]
@@ -122,6 +119,26 @@ def _qpos_from_frame(model, wp: np.ndarray) -> np.ndarray:
     return qpos
 
 
+def _foot_touch_from_contacts(data, r_foot_gid: int, l_foot_gid: int) -> tuple[bool, bool]:
+    touch_l = touch_r = False
+    for ci in range(data.ncon):
+        con = data.contact[ci]
+        try:
+            g0 = int(con["geom1"])
+            g1 = int(con["geom2"])
+        except (TypeError, KeyError, ValueError, IndexError):
+            try:
+                g0 = int(getattr(con, "geom1", -1))
+                g1 = int(getattr(con, "geom2", -1))
+            except (TypeError, ValueError):
+                continue
+        if g0 == r_foot_gid or g1 == r_foot_gid:
+            touch_r = True
+        if g0 == l_foot_gid or g1 == l_foot_gid:
+            touch_l = True
+    return touch_l, touch_r
+
+
 def _differentiate_qpos(model, q_a: np.ndarray, q_b: np.ndarray, h: float) -> np.ndarray:
     qvel = np.zeros(model.nv, dtype=np.float64)
     mujoco.mj_differentiatePos(model, qvel, h, q_a, q_b)
@@ -139,10 +156,17 @@ def run_mujoco_inverse_dynamics(
     """
     Returns per-frame dicts with joints (angles/vel/torque), com_*, grf_*, vertical_force.
     On failure returns None (caller falls back to landmark-only pipeline).
+
+    Vertical GRF uses a two-mass inertial model (hip + stance-limb accelerations from
+    landmarks, stance phase from MuJoCo foot–floor contact).
     """
-    _ = weight_kg
     _ = height_cm
     _ = fps
+
+    try:
+        M_kg = float(weight_kg) if weight_kg is not None and float(weight_kg) > 0 else 75.0
+    except (TypeError, ValueError):
+        M_kg = 75.0
 
     if mujoco is None or not _XML.is_file():
         return None
@@ -183,6 +207,8 @@ def run_mujoco_inverse_dynamics(
         else:
             qacc_seq[i] = (qvel_seq[i + 1] - qvel_seq[i - 1]) / (2.0 * dt)
 
+    acc2m = precompute_two_mass_inputs(processed_landmarks, dt)
+
     com_seq = np.zeros((n, 3), dtype=np.float64)
     frames_out: list[dict[str, Any]] = []
 
@@ -213,27 +239,19 @@ def run_mujoco_inverse_dynamics(
                 "torque_nm": torque,
             }
 
-        fl = np.zeros(3, dtype=np.float64)
-        fr = np.zeros(3, dtype=np.float64)
-        for ci in range(data.ncon):
-            con = data.contact[ci]
-            g0, g1 = -1, -1
-            try:
-                g0 = int(con["geom1"])
-                g1 = int(con["geom2"])
-            except (TypeError, KeyError, ValueError, IndexError):
-                try:
-                    g0 = int(getattr(con, "geom1", -1))
-                    g1 = int(getattr(con, "geom2", -1))
-                except (TypeError, ValueError):
-                    pass
-            fw = _world_contact_force(model, data, ci)
-            if g0 == r_foot_gid or g1 == r_foot_gid:
-                fr += fw
-            if g0 == l_foot_gid or g1 == l_foot_gid:
-                fl += fw
+        touch_l, touch_r = _foot_touch_from_contacts(data, r_foot_gid, l_foot_gid)
+        stance = stance_label(touch_l, touch_r)
+        if stance == "r":
+            a_st = float(acc2m["a_r_leg"][i])
+        elif stance == "l":
+            a_st = float(acc2m["a_l_leg"][i])
+        else:
+            a_st = 0.0
 
-        fy_total = float(fl[1] + fr[1])
+        fy_total = two_mass_vgrf_newtons(M_kg, float(acc2m["a_hip"][i]), a_st, stance)
+        fy_l, fy_r = split_vgrf_to_feet(fy_total, stance)
+        fl = np.array([0.0, fy_l, 0.0], dtype=np.float64)
+        fr = np.array([0.0, fy_r, 0.0], dtype=np.float64)
         ts = float(t_src[i]) if i < len(t_src) else float(i) * dt
 
         vel_com = np.zeros(3, dtype=np.float64)
@@ -254,6 +272,8 @@ def run_mujoco_inverse_dynamics(
                 "grf_left": [float(fl[0]), float(fl[1]), float(fl[2])],
                 "grf_right": [float(fr[0]), float(fr[1]), float(fr[2])],
                 "vertical_force": fy_total,
+                "two_mass_stance": stance,
+                "vgrf_model": "two_mass_sprint_vertical",
                 "residual_error": 0.0,
                 "warnings": [],
             }

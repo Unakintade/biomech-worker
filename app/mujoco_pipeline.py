@@ -19,7 +19,7 @@ except ImportError:
 from two_mass_sprint import (
     precompute_two_mass_inputs,
     split_vgrf_to_feet,
-    stance_label,
+    sprint_stance_series,
     two_mass_vgrf_newtons,
 )
 
@@ -119,26 +119,6 @@ def _qpos_from_frame(model, wp: np.ndarray) -> np.ndarray:
     return qpos
 
 
-def _foot_touch_from_contacts(data, r_foot_gid: int, l_foot_gid: int) -> tuple[bool, bool]:
-    touch_l = touch_r = False
-    for ci in range(data.ncon):
-        con = data.contact[ci]
-        try:
-            g0 = int(con["geom1"])
-            g1 = int(con["geom2"])
-        except (TypeError, KeyError, ValueError, IndexError):
-            try:
-                g0 = int(getattr(con, "geom1", -1))
-                g1 = int(getattr(con, "geom2", -1))
-            except (TypeError, ValueError):
-                continue
-        if g0 == r_foot_gid or g1 == r_foot_gid:
-            touch_r = True
-        if g0 == l_foot_gid or g1 == l_foot_gid:
-            touch_l = True
-    return touch_l, touch_r
-
-
 def _differentiate_qpos(model, q_a: np.ndarray, q_b: np.ndarray, h: float) -> np.ndarray:
     qvel = np.zeros(model.nv, dtype=np.float64)
     mujoco.mj_differentiatePos(model, qvel, h, q_a, q_b)
@@ -152,18 +132,22 @@ def run_mujoco_inverse_dynamics(
     height_cm: float,
     fps: int,
     t_src: np.ndarray,
-    landmarks_for_vgrf: np.ndarray | None = None,    
+    landmarks_for_vgrf: np.ndarray | None = None,
 ) -> list[dict[str, Any]] | None:
     """
     Returns per-frame dicts with joints (angles/vel/torque), com_*, grf_*, vertical_force.
     On failure returns None (caller falls back to landmark-only pipeline).
 
     Vertical GRF uses a two-mass inertial model (hip + stance-limb accelerations from
-    landmarks, stance phase from MuJoCo foot–floor contact). Prefer
+    landmarks; stance phase from landmark foot clearance (sprint: no double
+    support). Prefer
     ``landmarks_for_vgrf`` (e.g. resampled but not 6 Hz low-pass) so vertical
     accelerations are not overdamped.
     """
-    _ = height_cm
+    try:
+        h_cm = float(height_cm) if height_cm is not None else 0.0
+    except (TypeError, ValueError):
+        h_cm = 0.0
     _ = fps
 
     try:
@@ -185,8 +169,6 @@ def run_mujoco_inverse_dynamics(
         return None
 
     pelvis_bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
-    r_foot_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r_foot_geom")
-    l_foot_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "l_foot_geom")
 
     qpos_seq = np.zeros((n, model.nq), dtype=np.float64)
     for i in range(n):
@@ -217,6 +199,7 @@ def run_mujoco_inverse_dynamics(
         else processed_landmarks
     )
     acc2m = precompute_two_mass_inputs(vgrf_lm, dt)
+    stance_labels = sprint_stance_series(vgrf_lm, height_cm=h_cm)
 
     com_seq = np.zeros((n, 3), dtype=np.float64)
     frames_out: list[dict[str, Any]] = []
@@ -248,8 +231,7 @@ def run_mujoco_inverse_dynamics(
                 "torque_nm": torque,
             }
 
-        touch_l, touch_r = _foot_touch_from_contacts(data, r_foot_gid, l_foot_gid)
-        stance = stance_label(touch_l, touch_r)
+        stance = str(stance_labels[i])
         if stance == "r":
             a_st = float(acc2m["a_r_leg"][i])
         elif stance == "l":
@@ -282,6 +264,7 @@ def run_mujoco_inverse_dynamics(
                 "grf_right": [float(fr[0]), float(fr[1]), float(fr[2])],
                 "vertical_force": fy_total,
                 "two_mass_stance": stance,
+                "two_mass_stance_source": "landmark_sprint",
                 "vgrf_model": "two_mass_sprint_vertical",
                 "residual_error": 0.0,
                 "warnings": [],

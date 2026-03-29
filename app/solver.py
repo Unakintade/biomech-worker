@@ -102,7 +102,9 @@ def _preprocess(
     if window < 5:
         window = 5
 
-    return processed, t_src, dt, fs_eff, window
+    # Resampled positions without per-landmark low-pass — used for vGRF accelerations
+    # (6 Hz Butterworth strongly damps vertical bounce needed for realistic d²y/dt²).
+    return processed, data_u, t_src, dt, fs_eff, window
 
 
 def _landmark_segment_payload(processed_data: np.ndarray, dt: float, window: int):
@@ -150,7 +152,9 @@ def solve_kinetics(landmarks_sequence, weight_kg, height_cm, fps, timestamps=Non
         raise ValueError("Not enough frames for analysis. Minimum 5 frames required.")
 
     t_in = None if timestamps is None else np.asarray(timestamps, dtype=float)
-    processed, t_src, dt, fs_eff, window = _preprocess(landmarks_sequence, fps, t_in)
+    processed, resampled_raw, t_src, dt, fs_eff, window = _preprocess(
+        landmarks_sequence, fps, t_in
+    )
 
     (
         hip_mid,
@@ -170,7 +174,13 @@ def solve_kinetics(landmarks_sequence, weight_kg, height_cm, fps, timestamps=Non
         from mujoco_pipeline import run_mujoco_inverse_dynamics
 
         mj_frames = run_mujoco_inverse_dynamics(
-            processed, dt, float(weight_kg), float(height_cm), int(fps), t_src
+            processed,
+            dt,
+            float(weight_kg),
+            float(height_cm),
+            int(fps),
+            t_src,
+            landmarks_for_vgrf=resampled_raw,
         )
     except Exception:
         mj_frames = None

@@ -34,13 +34,16 @@ L_KNEE, R_KNEE = 25, 26
 L_ANKLE, R_ANKLE = 27, 28
 
 
-def vertical_accel_series(y: np.ndarray, dt: float) -> np.ndarray:
+def vertical_accel_series(
+    y: np.ndarray, dt: float, *, max_window: int = 11
+) -> np.ndarray:
     """Second time derivative of vertical coordinate (m/s²), SG-smoothed."""
     n = len(y)
     if n < 5:
         return np.zeros(n, dtype=np.float64)
     max_odd = n if n % 2 == 1 else n - 1
-    w = min(15, max(5, n // 2 * 2 - 1))
+    # Tighter max_window preserves stance-phase vertical acceleration peaks vs a 15-tap SG.
+    w = min(max_window, max(5, n // 2 * 2 - 1))
     w = min(w, max_odd)
     if w < 5:
         return np.zeros(n, dtype=np.float64)

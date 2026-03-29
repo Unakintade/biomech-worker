@@ -152,13 +152,16 @@ def run_mujoco_inverse_dynamics(
     height_cm: float,
     fps: int,
     t_src: np.ndarray,
+    landmarks_for_vgrf: np.ndarray | None = None,    
 ) -> list[dict[str, Any]] | None:
     """
     Returns per-frame dicts with joints (angles/vel/torque), com_*, grf_*, vertical_force.
     On failure returns None (caller falls back to landmark-only pipeline).
 
     Vertical GRF uses a two-mass inertial model (hip + stance-limb accelerations from
-    landmarks, stance phase from MuJoCo foot–floor contact).
+    landmarks, stance phase from MuJoCo foot–floor contact). Prefer
+    ``landmarks_for_vgrf`` (e.g. resampled but not 6 Hz low-pass) so vertical
+    accelerations are not overdamped.
     """
     _ = height_cm
     _ = fps
@@ -207,7 +210,13 @@ def run_mujoco_inverse_dynamics(
         else:
             qacc_seq[i] = (qvel_seq[i + 1] - qvel_seq[i - 1]) / (2.0 * dt)
 
-    acc2m = precompute_two_mass_inputs(processed_landmarks, dt)
+    vgrf_lm = (
+        landmarks_for_vgrf
+        if landmarks_for_vgrf is not None
+        and landmarks_for_vgrf.shape == processed_landmarks.shape
+        else processed_landmarks
+    )
+    acc2m = precompute_two_mass_inputs(vgrf_lm, dt)
 
     com_seq = np.zeros((n, 3), dtype=np.float64)
     frames_out: list[dict[str, Any]] = []

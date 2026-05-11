@@ -27,18 +27,13 @@ import numpy as np
 from scipy.ndimage import maximum_filter1d, median_filter, minimum_filter1d
 from scipy.signal import savgol_filter
 
+from .landmark_indices import LowerBodyIndices
+
 G = 9.81
 
 # One leg (thigh+shank+foot) ~16% M (De Leva–style); rest assigned to upper lump for this vertical split
 M_STANCE_LEG_FRAC = 0.16
 M_UPPER_FRAC = 1.0 - M_STANCE_LEG_FRAC
-
-# MediaPipe world indices (same as mujoco_pipeline)
-L_HIP, R_HIP = 23, 24
-L_KNEE, R_KNEE = 25, 26
-L_ANKLE, R_ANKLE = 27, 28
-L_TOE, R_TOE = 31, 32
-
 
 def vertical_accel_series(
     y: np.ndarray, dt: float, *, max_window: int = 11
@@ -56,10 +51,14 @@ def vertical_accel_series(
     return savgol_filter(y, w, polyorder=3, deriv=2, delta=dt, mode="interp").astype(np.float64)
 
 
-def precompute_two_mass_inputs(processed_landmarks: np.ndarray, dt: float) -> dict[str, np.ndarray]:
+def precompute_two_mass_inputs(
+    processed_landmarks: np.ndarray, dt: float, idx: LowerBodyIndices
+) -> dict[str, np.ndarray]:
     """Hip height and leg COM proxy heights + vertical accelerations."""
     p = processed_landmarks
-    n = p.shape[0]
+    L_HIP, R_HIP = idx.l_hip, idx.r_hip
+    L_KNEE, R_KNEE = idx.l_knee, idx.r_knee
+    L_ANKLE, R_ANKLE = idx.l_ankle, idx.r_ankle
     hip_y = 0.5 * (p[:, L_HIP, 1] + p[:, R_HIP, 1])
     r_leg_y = (p[:, R_HIP, 1] + p[:, R_KNEE, 1] + p[:, R_ANKLE, 1]) / 3.0
     l_leg_y = (p[:, L_HIP, 1] + p[:, L_KNEE, 1] + p[:, L_ANKLE, 1]) / 3.0
@@ -72,6 +71,7 @@ def precompute_two_mass_inputs(processed_landmarks: np.ndarray, dt: float) -> di
 
 def sprint_stance_series(
     p: np.ndarray,
+    idx: LowerBodyIndices,
     *,
     height_cm: float = 0.0,
     contact_margin_m: float = 0.036,
@@ -88,6 +88,8 @@ def sprint_stance_series(
     if n < 3:
         return np.array(["none"] * max(n, 0), dtype=object)
 
+    L_ANKLE, R_ANKLE = idx.l_ankle, idx.r_ankle
+    L_TOE, R_TOE = idx.l_toe, idx.r_toe
     l_min = np.minimum(p[:, L_ANKLE, 1], p[:, L_TOE, 1])
     r_min = np.minimum(p[:, R_ANKLE, 1], p[:, R_TOE, 1])
     l_min = median_filter(l_min.astype(np.float64), size=3, mode="nearest")

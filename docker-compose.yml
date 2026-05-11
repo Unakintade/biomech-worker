@@ -4,9 +4,10 @@ services:
   mujoco-backend:
     build: .
     ports:
-      - "8000:8000"
+      - "10000:10000"
     environment:
       - MUJOCO_GL=osmesa
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "10000"]
     restart: unless-stopped
     # Optional: mount a volume for custom MJCF models
     # volumes:

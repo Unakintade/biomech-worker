@@ -20,10 +20,10 @@
 
       <body name="r_thigh" pos="0 -0.04 0.11">
         <joint name="r_hip_flex" type="hinge" axis="1 0 0" range="-2.6 2.6"/>
-        <geom type="capsule" fromto="0 0 0 0 -0.38 0" size="0.055" mass="7.5"/>
+        <geom name="r_thigh_geom" type="capsule" fromto="0 0 0 0 -0.38 0" size="0.055" mass="7.5"/>
         <body name="r_shank" pos="0 -0.38 0">
           <joint name="r_knee" type="hinge" axis="1 0 0" range="-2.7 0.05"/>
-          <geom type="capsule" fromto="0 0 0 0 -0.38 0" size="0.048" mass="3.5"/>
+          <geom name="r_shank_geom" type="capsule" fromto="0 0 0 0 -0.38 0" size="0.048" mass="3.5"/>
           <body name="r_foot" pos="0 -0.38 0">
             <joint name="r_ankle" type="hinge" axis="1 0 0" range="-1.2 1.0"/>
             <geom name="r_foot_geom" type="sphere" size="0.055" mass="1.2" friction="1.1 0.04 0.004" rgba="0.2 0.65 0.3 1"/>
@@ -33,10 +33,10 @@
 
       <body name="l_thigh" pos="0 -0.04 -0.11">
         <joint name="l_hip_flex" type="hinge" axis="1 0 0" range="-2.6 2.6"/>
-        <geom type="capsule" fromto="0 0 0 0 -0.38 0" size="0.055" mass="7.5"/>
+        <geom name="l_thigh_geom" type="capsule" fromto="0 0 0 0 -0.38 0" size="0.055" mass="7.5"/>
         <body name="l_shank" pos="0 -0.38 0">
           <joint name="l_knee" type="hinge" axis="1 0 0" range="-2.7 0.05"/>
-          <geom type="capsule" fromto="0 0 0 0 -0.38 0" size="0.048" mass="3.5"/>
+          <geom name="l_shank_geom" type="capsule" fromto="0 0 0 0 -0.38 0" size="0.048" mass="3.5"/>
           <body name="l_foot" pos="0 -0.38 0">
             <joint name="l_ankle" type="hinge" axis="1 0 0" range="-1.2 1.0"/>
             <geom name="l_foot_geom" type="sphere" size="0.055" mass="1.2" friction="1.1 0.04 0.004" rgba="0.2 0.65 0.3 1"/>

@@ -10,7 +10,8 @@ ENV MUJOCO_GL osmesa
 # libgl1-mesa-glx and libosmesa6 are required for headless MuJoCo rendering
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    libgl1-mesa-glx \
+    libgl1 \
+    libglx-mesa0 \
     libosmesa6 \
     mesa-utils \
     libglib2.0-0 \

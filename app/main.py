@@ -7,12 +7,41 @@ from typing import List, Optional
 import numpy as np
 from fastapi.middleware.cors import CORSMiddleware
 
+# Ensure the 'app' folder is in the path so we can find solver.py
+sys.path.append(os.path.dirname(__file__))
+
+
+# 1. DEFINE APP FIRST (Fixes NameError)
+app = FastAPI(title="Sprint Analysis API (Hybrid GPU Bridge)")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 2. MATCH FRONTEND DATA STRUCTURE (Fixes 422 Error)
+
+
+class FrameData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    frameIdx: int
+    timestamp: float
+    worldPositions: List[List[float]]
+
+
+class AnalysisRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    landmarks: List[FrameData]
+    weight_kg: float
+    height_cm: Optional[float] = None
+    fps: int
 
 # Assuming these exist in your app/ directory based on previous steps
 from .solver import solve_kinetics 
 from .mesh_to_mujoco import update_mujoco_from_trellis_and_smpl
-
-app = FastAPI(title="Sprint Analysis API (Hybrid GPU Bridge)")
 
 # This URL changes every time you restart Colab. 
 # Set this in Render's Environment Variables.

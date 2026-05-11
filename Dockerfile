@@ -1,26 +1,44 @@
-# Use an official Python runtime with GL support
-FROM python:3.11-slim-bookworm
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim
 
-# Install Native C libraries for MuJoCo
-RUN apt-get update && apt-get install -y \
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+ENV MUJOCO_GL osmesa
+
+# Install system dependencies for MuJoCo and Mesh processing
+# libgl1-mesa-glx and libosmesa6 are required for headless MuJoCo rendering
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     libgl1-mesa-glx \
     libosmesa6 \
-    libglew-dev \
-    libglfw3 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    mesa-utils \
+    libglib2.0-0 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # Headless Rendering Config
 ENV MUJOCO_GL=osmesa
 ENV PYOPENGL_PLATFORM=osmesa
 
+# Set the working directory
 WORKDIR /code
 
-COPY ./requirements.txt /code/requirements.txt
-RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ./app /code/app
+# Create necessary application directories
+RUN mkdir -p app/data app/models
 
-ENV PYTHONPATH=/code
+# Copy the application code
+COPY ./app ./app
 
-# Start the API
+# Set permissions for the data folder (important for Render's ephemeral storage)
+RUN chmod -R 777 /code/app/data
+
+# Expose the port Render uses (10000 by default)
+EXPOSE 10000
+
+# Start the application
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "10000"]

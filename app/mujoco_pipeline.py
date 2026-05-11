@@ -16,7 +16,10 @@ try:
 except ImportError:
     mujoco = None
 
-from two_mass_sprint import (
+from .landmark_indices import LandmarkLayout, lower_body_indices, min_joints_for_layout
+from .landmark_indices import LowerBodyIndices
+
+from .two_mass_sprint import (
     precompute_two_mass_inputs,
     split_vgrf_to_feet,
     sprint_stance_series,
@@ -24,10 +27,6 @@ from two_mass_sprint import (
 )
 
 _XML = pathlib.Path(__file__).resolve().parent / "models" / "biped_sprint.xml"
-
-# MediaPipe pose landmarks (world)
-R_HIP, R_KNEE, R_ANKLE, R_TOE = 24, 26, 28, 32
-L_HIP, L_KNEE, L_ANKLE, L_TOE = 23, 25, 27, 31
 
 _JOINT_OUT = (
     "r_hip_flex",
@@ -95,9 +94,9 @@ def _elevate_to_clear_floor(model, data, qpos: np.ndarray) -> np.ndarray:
     return q
 
 
-def _qpos_from_frame(model, wp: np.ndarray) -> np.ndarray:
-    hl = wp[L_HIP]
-    hr = wp[R_HIP]
+def _qpos_from_frame(model, wp: np.ndarray, idx: LowerBodyIndices) -> np.ndarray:
+    hl = wp[idx.l_hip]
+    hr = wp[idx.r_hip]
     mid = 0.5 * (hl + hr)
     line = hr - hl
     line_xz = np.array([line[0], 0.0, line[2]], dtype=np.float64)
@@ -105,9 +104,12 @@ def _qpos_from_frame(model, wp: np.ndarray) -> np.ndarray:
     yaw = float(np.arctan2(line_xz[0], line_xz[2] + 1e-9)) if ln > 1e-6 else 0.0
     quat = _quat_wxyz_yaw_about_y(yaw)
 
-    rh, rk, ra = _leg_angles(hr, wp[R_KNEE], wp[R_ANKLE], wp[R_TOE], quat, 1.0)
-    lh, lk, la = _leg_angles(hl, wp[L_KNEE], wp[L_ANKLE], wp[L_TOE], quat, -1.0)
-
+    rh, rk, ra = _leg_angles(
+        hr, wp[idx.r_knee], wp[idx.r_ankle], wp[idx.r_toe], quat, 1.0
+    )
+    lh, lk, la = _leg_angles(
+        hl, wp[idx.l_knee], wp[idx.l_ankle], wp[idx.l_toe], quat, -1.0
+    )
     qpos = np.zeros(model.nq, dtype=np.float64)
     qpos[0:3] = mid
     qpos[3:7] = quat
@@ -133,6 +135,8 @@ def run_mujoco_inverse_dynamics(
     fps: int,
     t_src: np.ndarray,
     landmarks_for_vgrf: np.ndarray | None = None,
+    mjcf_xml: str | None = None,
+    landmark_layout: LandmarkLayout = LandmarkLayout.SMPL24,
 ) -> list[dict[str, Any]] | None:
     """
     Returns per-frame dicts with joints (angles/vel/torque), com_*, grf_*, vertical_force.
@@ -143,6 +147,11 @@ def run_mujoco_inverse_dynamics(
     support). Prefer
     ``landmarks_for_vgrf`` (e.g. resampled but not 6 Hz low-pass) so vertical
     accelerations are not overdamped.
+    
+    ``mjcf_xml``: optional subject-scaled MJCF string; if omitted, loads bundled
+    ``biped_sprint.xml`` from disk.
+
+    ``landmark_layout``: SMPL-24 (Colab / mmhuman3d) vs MediaPipe-33 (stride-kin-solver).
     """
     try:
         h_cm = float(height_cm) if height_cm is not None else 0.0
@@ -162,8 +171,17 @@ def run_mujoco_inverse_dynamics(
     if n < 3:
         return None
 
+    idx = lower_body_indices(landmark_layout)
+    min_j = min_joints_for_layout(landmark_layout)
+    if processed_landmarks.shape[1] < min_j:
+        return None
+
+
     try:
-        model = mujoco.MjModel.from_xml_path(str(_XML))
+        if mjcf_xml is not None:
+            model = mujoco.MjModel.from_xml_string(mjcf_xml)
+        else:
+            model = mujoco.MjModel.from_xml_path(str(_XML))
         data = mujoco.MjData(model)
     except Exception:
         return None
@@ -172,7 +190,7 @@ def run_mujoco_inverse_dynamics(
 
     qpos_seq = np.zeros((n, model.nq), dtype=np.float64)
     for i in range(n):
-        q = _qpos_from_frame(model, processed_landmarks[i])
+        q = _qpos_from_frame(model, processed_landmarks[i], idx)
         q = _elevate_to_clear_floor(model, data, q)
         qpos_seq[i] = q
 
@@ -198,11 +216,14 @@ def run_mujoco_inverse_dynamics(
         and landmarks_for_vgrf.shape == processed_landmarks.shape
         else processed_landmarks
     )
-    acc2m = precompute_two_mass_inputs(vgrf_lm, dt)
-    stance_labels = sprint_stance_series(vgrf_lm, height_cm=h_cm)
+    acc2m = precompute_two_mass_inputs(vgrf_lm, dt, idx)
+    stance_labels = sprint_stance_series(vgrf_lm, idx, height_cm=h_cm)
 
     com_seq = np.zeros((n, 3), dtype=np.float64)
     frames_out: list[dict[str, Any]] = []
+    stance_src = (
+        "smpl24" if landmark_layout == LandmarkLayout.SMPL24 else "mediapipe33"
+    )
 
     for i in range(n):
         data.qpos[:] = qpos_seq[i]
@@ -264,7 +285,7 @@ def run_mujoco_inverse_dynamics(
                 "grf_right": [float(fr[0]), float(fr[1]), float(fr[2])],
                 "vertical_force": fy_total,
                 "two_mass_stance": stance,
-                "two_mass_stance_source": "landmark_sprint",
+                "two_mass_stance_source": stance_src,
                 "vgrf_model": "two_mass_sprint_vertical",
                 "residual_error": 0.0,
                 "warnings": [],

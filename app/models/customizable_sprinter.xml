@@ -1,0 +1,36 @@
+<mujoco model="sprinter_scaled">
+    <compiler angle="degree" coordinate="local" inertiafromgeom="true"/>
+    <option gravity="0 0 -9.81"/>
+
+    <default>
+        <geom contype="1" conaffinity="1" rgba="0.8 0.6 0.4 1" type="capsule"/>
+        <joint damping="2.0" armature="0.05"/>
+    </default>
+
+    <worldbody>
+        <light pos="0 0 3" dir="0 0 -1"/>
+        <geom name="track" type="plane" size="50 5 0.1" rgba="0.2 0.2 0.2 1"/>
+        
+        <body name="pelvis" pos="0 0 1.0">
+            <freejoint name="root"/>
+            <geom name="pelvis_geom" size="0.08" fromto="-0.05 0 0 0.05 0 0"/>
+            
+            <body name="r_thigh" pos="0 -0.1 0">
+                <joint name="r_hip" type="ball"/>
+                <!-- Length updated by mesh_to_mujoco.py -->
+                <geom name="r_thigh_geom" size="0.055" fromto="0 0 0 0 0 -0.45"/>
+                
+                <body name="r_shank" pos="0 0 -0.45">
+                    <joint name="r_knee" type="hinge" axis="0 1 0" range="-150 0"/>
+                    <!-- Length updated by mesh_to_mujoco.py -->
+                    <geom name="r_shank_geom" size="0.045" fromto="0 0 0 0 0 -0.42"/>
+                    
+                    <body name="r_foot" pos="0 0 -0.42">
+                        <joint name="r_ankle" type="ball"/>
+                        <geom name="r_foot_geom" size="0.035" fromto="0 0 0 0.18 0 0"/>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>

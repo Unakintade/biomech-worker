@@ -18,6 +18,7 @@ except ImportError:
 
 from .landmark_indices import LandmarkLayout, lower_body_indices, min_joints_for_layout
 from .landmark_indices import LowerBodyIndices
+from .smpl_joints import PELVIS, SPINE1
 
 from .two_mass_sprint import (
     precompute_two_mass_inputs,
@@ -94,14 +95,36 @@ def _elevate_to_clear_floor(model, data, qpos: np.ndarray) -> np.ndarray:
     return q
 
 
-def _qpos_from_frame(model, wp: np.ndarray, idx: LowerBodyIndices) -> np.ndarray:
+def _yaw_from_landmarks(
+    wp: np.ndarray, idx: LowerBodyIndices, layout: LandmarkLayout
+) -> float:
+    """Facing yaw about +Y from hip line, or pelvis→spine (SMPL) if hips collapse in XZ."""
     hl = wp[idx.l_hip]
     hr = wp[idx.r_hip]
-    mid = 0.5 * (hl + hr)
     line = hr - hl
     line_xz = np.array([line[0], 0.0, line[2]], dtype=np.float64)
     ln = float(np.linalg.norm(line_xz))
-    yaw = float(np.arctan2(line_xz[0], line_xz[2] + 1e-9)) if ln > 1e-6 else 0.0
+    if ln > 1e-6:
+        return float(np.arctan2(line_xz[0], line_xz[2] + 1e-9))
+    if layout == LandmarkLayout.SMPL24:
+        f = wp[SPINE1] - wp[PELVIS]
+        fxz = np.array([f[0], 0.0, f[2]], dtype=np.float64)
+        ln2 = float(np.linalg.norm(fxz))
+        if ln2 > 1e-6:
+            return float(np.arctan2(fxz[0], fxz[2] + 1e-9))
+    return 0.0
+
+
+def _qpos_from_frame(
+    model, wp: np.ndarray, idx: LowerBodyIndices, layout: LandmarkLayout
+) -> np.ndarray:
+    hl = wp[idx.l_hip]
+    hr = wp[idx.r_hip]
+    if layout == LandmarkLayout.SMPL24:
+        mid = np.array(wp[PELVIS], dtype=np.float64, copy=True)
+    else:
+        mid = 0.5 * (hl + hr)
+    yaw = _yaw_from_landmarks(wp, idx, layout)
     quat = _quat_wxyz_yaw_about_y(yaw)
 
     rh, rk, ra = _leg_angles(
@@ -190,7 +213,7 @@ def run_mujoco_inverse_dynamics(
 
     qpos_seq = np.zeros((n, model.nq), dtype=np.float64)
     for i in range(n):
-        q = _qpos_from_frame(model, processed_landmarks[i], idx)
+        q = _qpos_from_frame(model, processed_landmarks[i], idx, landmark_layout)
         q = _elevate_to_clear_floor(model, data, q)
         qpos_seq[i] = q
 
@@ -218,6 +241,12 @@ def run_mujoco_inverse_dynamics(
     )
     acc2m = precompute_two_mass_inputs(vgrf_lm, dt, idx)
     stance_labels = sprint_stance_series(vgrf_lm, idx, height_cm=h_cm)
+
+    lb_idx = [idx.l_hip, idx.r_hip, idx.l_knee, idx.r_knee, idx.l_ankle, idx.r_ankle]
+    lb_motion_m = float(
+        np.max(np.ptp(processed_landmarks[:, lb_idx, :], axis=0))
+    )
+    static_warn = lb_motion_m < 5e-4
 
     com_seq = np.zeros((n, 3), dtype=np.float64)
     frames_out: list[dict[str, Any]] = []
@@ -274,10 +303,20 @@ def run_mujoco_inverse_dynamics(
         elif n > 1:
             vel_com = (com_seq[i + 1] - com_seq[i]) / dt
 
+        k3d = processed_landmarks[i].tolist()
+        warn_list: list[str] = []
+        if static_warn and i == 0:
+            warn_list.append(
+                "Lower-body keypoints vary <0.5mm over the clip; IK angles may stay ~0. "
+                "Verify Colab returns real per-frame SMPL joints (not a repeated template) "
+                "and try joints_coordinate_frame: camera_flip_y if upside-down."
+            )
+
         frames_out.append(
             {
                 "timestamp": ts,
                 "frame_idx": i,
+                "keypoints3d": k3d,
                 "joints": joints_out,
                 "com_position": [float(com_seq[i, 0]), float(com_seq[i, 1]), float(com_seq[i, 2])],
                 "com_velocity": [float(vel_com[0]), float(vel_com[1]), float(vel_com[2])],
@@ -288,7 +327,7 @@ def run_mujoco_inverse_dynamics(
                 "two_mass_stance_source": stance_src,
                 "vgrf_model": "two_mass_sprint_vertical",
                 "residual_error": 0.0,
-                "warnings": [],
+                "warnings": warn_list,
             }
         )
 

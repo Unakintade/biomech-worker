@@ -11,6 +11,8 @@ SPINE2 = 6
 L_ANKLE, R_ANKLE = 7, 8
 SPINE3 = 9
 L_FOOT, R_FOOT = 10, 11
+# 12 Neck, 13 L_Collar, 14 R_Collar, 15 Head, 16–17 L/R_Shoulder,
+# 18–19 L/R_Elbow, 20–21 L/R_Wrist, 22–23 L/R_Hand
 
 # Use foot joint as toe proxy for stance (SMPL has no toe landmarks)
 L_TOE, R_TOE = L_FOOT, R_FOOT

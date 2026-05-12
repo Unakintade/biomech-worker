@@ -1,4 +1,6 @@
 import os
+import json
+import logging
 import sys
 import httpx
 from fastapi import FastAPI, HTTPException, UploadFile, File
@@ -12,6 +14,7 @@ from .landmark_indices import LandmarkLayout, lower_body_indices
 from .mjcf_smpl_scale import build_scaled_biped_mjcf_xml
 from .mujoco_pipeline import run_mujoco_inverse_dynamics
 
+logger = logging.getLogger(__name__)
 
 # 1. DEFINE APP FIRST (Fixes NameError)
 app = FastAPI(title="Sprint Analysis API (Colab mmhuman3d + MuJoCo)")
@@ -69,21 +72,48 @@ async def analyze_sprint_full(
     fps: float = 120.0,
 ):
     """
-    Coordination Logic:
-    1. Receives video from Frontend.
-    2. Forwards video to Google Colab for mmhuman3d/Trellis processing.
-    3. Receives 3D SMPL data from Colab.
-    4. Runs local MuJoCo physics simulation on Render.
+    1. Forward video to Colab (mmhuman3d / SMPL on GPU).
+    2. Expect JSON: smpl_betas (10), joints_world (T,24,3) in meters Y-up, optional fps/timestamps.
+    3. Scale biped MJCF from SMPL segments + betas; run inverse dynamics on the worker.
+
+    Returns HTTP 200 with ``AnalysisResponse`` (check ``status`` field). Configuration and bridge
+    errors are returned in the body instead of a bare 500 where possible.
     """
     if not COLAB_BRIDGE_URL:
-        raise HTTPException(
-            status_code=500,
-            detail="COLAB_BRIDGE_URL not configured in environment variables.",
+        return AnalysisResponse(
+            status="error",
+            error=(
+                "COLAB_BRIDGE_URL is not set on this server. "
+                "In Render: Environment → add COLAB_BRIDGE_URL to your Colab/ngrok base URL (no trailing slash)."
+            ),
         )
 
     # STEP 1: Forward to Colab GPU Bridge
     base = COLAB_BRIDGE_URL.rstrip("/")
 
+    try:
+        return await _analyze_full_run(
+            base=base,
+            video=video,
+            height_cm=height_cm,
+            weight_kg=weight_kg,
+            fps=fps,
+        )
+    except Exception as e:
+        logger.exception("analyze-full failed")
+        return AnalysisResponse(
+            status="error",
+            error=f"Unexpected server error: {e!s}",
+        )
+async def _analyze_full_run(
+    *,
+    base: str,
+    video: UploadFile,
+    height_cm: float,
+    weight_kg: float,
+    fps: float,
+) -> AnalysisResponse:
+    
     async with httpx.AsyncClient(timeout=BRIDGE_TIMEOUT_SEC) as client:
         try:
             content = await video.read()
@@ -103,7 +133,14 @@ async def analyze_sprint_full(
         )
 
     try:
-        colab = parse_colab_result(ai_response.json())
+        raw = ai_response.json()
+    except json.JSONDecodeError:
+        return AnalysisResponse(
+            status="error",
+            error="Colab bridge returned non-JSON (check tunnel URL and ngrok / Colab logs).",
+        )
+    try:
+        colab = parse_colab_result(raw)
     except ValidationError as e:
         return AnalysisResponse(
             status="error",
@@ -114,7 +151,14 @@ async def analyze_sprint_full(
     fps_use = max(fps_use, 1e-3)
     dt = 1.0 / fps_use
 
-    joints = colab.joints_numpy_mujoco()
+    try:
+        joints = colab.joints_numpy_mujoco()
+    except ValueError as e:
+        return AnalysisResponse(
+            status="error",
+            error=f"joints_world shape/content invalid (need T×24×3 in meters): {e!s}",
+        )
+
     betas = colab.betas_numpy()
     t_src = colab.time_array(dt)
 
@@ -145,7 +189,14 @@ async def analyze_sprint_full(
 
     idx = lower_body_indices(LandmarkLayout.SMPL24)
     lb_idx = [idx.l_hip, idx.r_hip, idx.l_knee, idx.r_knee, idx.l_ankle, idx.r_ankle]
-    lower_body_peak_motion_m = float(np.max(np.ptp(joints[:, lb_idx, :], axis=0)))
+    try:
+        lower_body_peak_motion_m = float(np.max(np.ptp(joints[:, lb_idx, :], axis=0)))
+    except Exception:
+        lower_body_peak_motion_m = 0.0
+    jcf = colab.joints_coordinate_frame
+    if hasattr(jcf, "value"):
+        jcf = jcf.value
+
 
     return AnalysisResponse(
         status="success",
@@ -156,7 +207,7 @@ async def analyze_sprint_full(
                 "num_frames": len(frames),
                 "height_cm": height_cm,
                 "weight_kg": weight_kg,
-                "joints_coordinate_frame": colab.joints_coordinate_frame,
+                "joints_coordinate_frame": str(jcf),
                 "lower_body_peak_motion_m": lower_body_peak_motion_m,
                 "keypoints3d_layout": "smpl24_per_frame",
             },

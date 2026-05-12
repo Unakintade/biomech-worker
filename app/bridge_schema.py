@@ -23,7 +23,7 @@ def apply_joint_coordinate_frame(joints: np.ndarray, frame: str) -> np.ndarray:
 
     camera_flip_y: negate world Y (common when camera / OpenGL style differs from MJCF).
     """
-    j = np.asarray(joints, dtype=np.float64, copy=True)
+    j = np.array(joints, dtype=np.float64, copy=True)
     f = (frame or "world_y_up").lower().strip()
     if f in ("camera_flip_y", "flip_y", "opengl_y_up"):
         j[..., 1] *= -1.0

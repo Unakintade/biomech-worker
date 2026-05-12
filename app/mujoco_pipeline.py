@@ -1,6 +1,6 @@
 """
 MuJoCo geometric IK (lower body) + mj_forward / mj_inverse for joint torques.
-MediaPipe world frame: Y up, meters. Gravity matches XML (0 -9.81 0).
+SMPL-24 or MediaPipe-33 world frame: Y up, meters. Gravity matches XML (0 -9.81 0).
 """
 
 from __future__ import annotations
@@ -18,7 +18,19 @@ except ImportError:
 
 from .landmark_indices import LandmarkLayout, lower_body_indices, min_joints_for_layout
 from .landmark_indices import LowerBodyIndices
-from .smpl_joints import PELVIS, SPINE1
+from .smpl_joints import (
+    HEAD,
+    L_ELBOW,
+    L_SHOULDER,
+    L_WRIST,
+    NECK,
+    PELVIS,
+    R_ELBOW,
+    R_SHOULDER,
+    R_WRIST,
+    SPINE1,
+    SPINE3,
+)
 
 from .two_mass_sprint import (
     precompute_two_mass_inputs,
@@ -57,7 +69,14 @@ def _leg_angles(
     quat_wxyz: np.ndarray,
     side_sign: float,
 ) -> tuple[float, float, float]:
-    """Hinge angles (radians) aligned with MJCF (flexion about parent X)."""
+    """
+    Hinge angles (radians) for ``biped_sprint.xml``.
+
+    Knee / ankle in MJCF use **negative** values for flexion (ranges roughly -2.7..0
+    and -1.2..1). The old ``pi - arccos(dot)`` lived in **[0, pi]** and sat **outside**
+    those ranges for a straight leg, so MuJoCo clamped the knee and most motion leaked
+    into the ankle — matching “only foot/calf” artefacts.
+    """
     Rw = _mat_from_quat_wxyz(quat_wxyz)
     R_bt = Rw.T
 
@@ -70,13 +89,77 @@ def _leg_angles(
     hip_flex = float(np.arctan2(loc[2], -(loc[1] + 1e-9)) * side_sign)
 
     u = (knee - hip) / (np.linalg.norm(knee - hip) + 1e-9)
-    l = (ankle - knee) / (np.linalg.norm(ankle - knee) + 1e-9)
-    knee_flex = float(np.pi - np.arccos(np.clip(float(np.dot(u, l)), -1.0, 1.0)))
+    lvec = (ankle - knee) / (np.linalg.norm(ankle - knee) + 1e-9)
+    # Internal angle at knee between thigh and shank; flexion = negative of that angle
+    # when vectors continue "down" the leg (straight → 0, bent → negative).
+    knee_flex = -float(np.arccos(np.clip(float(np.dot(u, lvec)), -1.0, 1.0)))
 
-    s = (knee - ankle) / (np.linalg.norm(knee - ankle) + 1e-9)
-    f = (toe - ankle) / (np.linalg.norm(toe - ankle) + 1e-9)
-    ankle_flex = float(np.pi - np.arccos(np.clip(float(np.dot(s, f)), -1.0, 1.0)))
+    v_shin = (knee - ankle) / (np.linalg.norm(knee - ankle) + 1e-9)
+    v_foot = (toe - ankle) / (np.linalg.norm(toe - ankle) + 1e-9)
+    ankle_flex = -float(np.arccos(np.clip(float(np.dot(v_shin, v_foot)), -1.0, 1.0)))
+
     return hip_flex, knee_flex, ankle_flex
+
+
+def _angle_at_joint_deg(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """Angle ABC at vertex B, degrees."""
+    v1 = a - b
+    v2 = c - b
+    n1 = float(np.linalg.norm(v1))
+    n2 = float(np.linalg.norm(v2))
+    if n1 < 1e-9 or n2 < 1e-9:
+        return 0.0
+    v1 /= n1
+    v2 /= n2
+    return float(np.degrees(np.arccos(np.clip(float(np.dot(v1, v2)), -1.0, 1.0))))
+
+
+def _smpl_upper_body_geometry_deg(wp: np.ndarray) -> dict[str, dict[str, float]]:
+    """
+    Upper-limb angles from SMPL-24 keypoints only (no MuJoCo shoulder/elbow exists in
+    ``biped_spring.xml``). For UI / “activation” proxies; ``torque_nm`` is always 0.
+    """
+    out: dict[str, dict[str, float | str]] = {}
+    try:
+        neck = wp[NECK]
+        ls, rs = wp[L_SHOULDER], wp[R_SHOULDER]
+        le, re = wp[L_ELBOW], wp[R_ELBOW]
+        lw, rw = wp[L_WRIST], wp[R_WRIST]
+        sp3 = wp[SPINE3]
+        hd = wp[HEAD]
+        out["neck_tilt"] = {
+            "angle_deg": _angle_at_joint_deg(sp3, neck, hd),
+            "velocity_rad_s": 0.0,
+            "torque_nm": 0.0,
+            "estimate": "smpl_keypoint_geometry",
+        }
+        out["l_shoulder"] = {
+            "angle_deg": _angle_at_joint_deg(neck, ls, le),
+            "velocity_rad_s": 0.0,
+            "torque_nm": 0.0,
+            "estimate": "smpl_keypoint_geometry",
+        }
+        out["r_shoulder"] = {
+            "angle_deg": _angle_at_joint_deg(neck, rs, re),
+            "velocity_rad_s": 0.0,
+            "torque_nm": 0.0,
+            "estimate": "smpl_keypoint_geometry",
+        }
+        out["l_elbow"] = {
+            "angle_deg": _angle_at_joint_deg(ls, le, lw),
+            "velocity_rad_s": 0.0,
+            "torque_nm": 0.0,
+            "estimate": "smpl_keypoint_geometry",
+        }
+        out["r_elbow"] = {
+            "angle_deg": _angle_at_joint_deg(rs, re, rw),
+            "velocity_rad_s": 0.0,
+            "torque_nm": 0.0,
+            "estimate": "smpl_keypoint_geometry",
+        }
+    except (IndexError, TypeError):
+        pass
+    return out
 
 
 def _elevate_to_clear_floor(model, data, qpos: np.ndarray) -> np.ndarray:
@@ -133,6 +216,7 @@ def _qpos_from_frame(
     lh, lk, la = _leg_angles(
         hl, wp[idx.l_knee], wp[idx.l_ankle], wp[idx.l_toe], quat, -1.0
     )
+
     qpos = np.zeros(model.nq, dtype=np.float64)
     qpos[0:3] = mid
     qpos[3:7] = quat
@@ -140,6 +224,9 @@ def _qpos_from_frame(
     for name, val in zip(_JOINT_OUT, jvals):
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
         adr = int(model.jnt_qposadr[jid])
+        lo, hi = float(model.jnt_range[jid, 0]), float(model.jnt_range[jid, 1])
+        if (hi - lo) > 1e-6 and np.isfinite(lo) and np.isfinite(hi):
+            val = float(np.clip(val, lo, hi))
         qpos[adr] = val
     return qpos
 
@@ -170,7 +257,7 @@ def run_mujoco_inverse_dynamics(
     support). Prefer
     ``landmarks_for_vgrf`` (e.g. resampled but not 6 Hz low-pass) so vertical
     accelerations are not overdamped.
-    
+
     ``mjcf_xml``: optional subject-scaled MJCF string; if omitted, loads bundled
     ``biped_sprint.xml`` from disk.
 
@@ -198,7 +285,6 @@ def run_mujoco_inverse_dynamics(
     min_j = min_joints_for_layout(landmark_layout)
     if processed_landmarks.shape[1] < min_j:
         return None
-
 
     try:
         if mjcf_xml is not None:
@@ -267,7 +353,7 @@ def run_mujoco_inverse_dynamics(
         mujoco.mj_inverse(model, data)
         tau = np.array(data.qfrc_inverse, dtype=np.float64)
 
-        joints_out: dict[str, dict[str, float]] = {}
+        joints_out: dict[str, dict[str, float | str]] = {}
         for jname in _JOINT_OUT:
             jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, jname)
             qadr = int(model.jnt_qposadr[jid])
@@ -279,7 +365,18 @@ def run_mujoco_inverse_dynamics(
                 "angle_deg": angle_deg,
                 "velocity_rad_s": vel_rs,
                 "torque_nm": torque,
+                "estimate": "mujoco_inverse_dynamics",
             }
+
+        if landmark_layout == LandmarkLayout.SMPL24:
+            for k, v in _smpl_upper_body_geometry_deg(processed_landmarks[i]).items():
+                if i > 0:
+                    prev = float(frames_out[i - 1]["joints"][k]["angle_deg"])
+                    v = dict(v)
+                    v["velocity_rad_s"] = float(
+                        np.radians((v["angle_deg"] - prev) / max(dt, 1e-6))
+                    )
+                joints_out[k] = v
 
         stance = str(stance_labels[i])
         if stance == "r":

@@ -197,20 +197,26 @@ async def _analyze_full_run(
     if hasattr(jcf, "value"):
         jcf = jcf.value
 
+    bridge_meta = dict(colab.metadata) if colab.metadata else {}
+    meta_out = {**bridge_meta}
+    meta_out.update(
+        {
+            "joint_source": "smpl24",
+            "fps": fps_use,
+            "num_frames": len(frames),
+            "height_cm": height_cm,
+            "weight_kg": weight_kg,
+            "joints_coordinate_frame": str(jcf),
+            "lower_body_peak_motion_m": lower_body_peak_motion_m,
+            "keypoints3d_layout": "smpl24_per_frame",
+        }
+    )
+
 
     return AnalysisResponse(
         status="success",
         results={
-            "metadata": {
-                "joint_source": "smpl24",
-                "fps": fps_use,
-                "num_frames": len(frames),
-                "height_cm": height_cm,
-                "weight_kg": weight_kg,
-                "joints_coordinate_frame": str(jcf),
-                "lower_body_peak_motion_m": lower_body_peak_motion_m,
-                "keypoints3d_layout": "smpl24_per_frame",
-            },
+            "metadata": meta_out,
             "frames": frames,
         },
     )

@@ -49,6 +49,11 @@ class ColabSprintResult(BaseModel):
     camera_flip_y: negate Y on every joint (use if mmhuman3d / camera coords look inverted).
     """
 
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description="Colab extras: inference_source, mmpose_gait_2d (2D ground/contact), errors.",
+    )
+
     @field_validator("joints_world")
     @classmethod
     def _non_empty_sequence(cls, v: list[list[list[float]]]) -> list[list[list[float]]]:

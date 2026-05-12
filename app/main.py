@@ -8,7 +8,7 @@ import numpy as np
 from fastapi.middleware.cors import CORSMiddleware
 
 from .bridge_schema import parse_colab_result
-from .landmark_indices import LandmarkLayout
+from .landmark_indices import LandmarkLayout, lower_body_indices
 from .mjcf_smpl_scale import build_scaled_biped_mjcf_xml
 from .mujoco_pipeline import run_mujoco_inverse_dynamics
 
@@ -114,7 +114,7 @@ async def analyze_sprint_full(
     fps_use = max(fps_use, 1e-3)
     dt = 1.0 / fps_use
 
-    joints = colab.joints_numpy()
+    joints = colab.joints_numpy_mujoco()
     betas = colab.betas_numpy()
     t_src = colab.time_array(dt)
 
@@ -143,6 +143,10 @@ async def analyze_sprint_full(
             error="MuJoCo inverse dynamics failed (check logs / MJCF validity).",
         )
 
+    idx = lower_body_indices(LandmarkLayout.SMPL24)
+    lb_idx = [idx.l_hip, idx.r_hip, idx.l_knee, idx.r_knee, idx.l_ankle, idx.r_ankle]
+    lower_body_peak_motion_m = float(np.max(np.ptp(joints[:, lb_idx, :], axis=0)))
+
     return AnalysisResponse(
         status="success",
         results={
@@ -152,6 +156,9 @@ async def analyze_sprint_full(
                 "num_frames": len(frames),
                 "height_cm": height_cm,
                 "weight_kg": weight_kg,
+                "joints_coordinate_frame": colab.joints_coordinate_frame,
+                "lower_body_peak_motion_m": lower_body_peak_motion_m,
+                "keypoints3d_layout": "smpl24_per_frame",
             },
             "frames": frames,
         },

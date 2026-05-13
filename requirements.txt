@@ -9,3 +9,4 @@ pydantic>=2.0.0
 python-multipart==0.0.6
 opencv-contrib-python
 opencv-python
+opencv-python-headless
